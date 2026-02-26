@@ -55,5 +55,6 @@ export function makeEntry(filePath) {
     notes: '',
     createdAt: stats.birthtime.toISOString(),
     indexedAt: new Date().toISOString(),
+    size: stats.size,
   };
 }

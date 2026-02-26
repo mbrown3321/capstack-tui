@@ -1,85 +1,63 @@
 import { useState, useEffect, useCallback } from 'react';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
 import chokidar from 'chokidar';
-import { readIndex, upsertEntry, deleteEntry, makeEntry } from '../store/index.js';
+import path from 'path';
+import { readIndex, makeEntry, upsertEntry, deleteEntry } from '../store/index.js';
 
-const SCREENSHOT_DIR = path.join(os.homedir(), 'Desktop'); // adjust as needed
+const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(process.env.HOME, 'Desktop');
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
-export function useScreenshots() {
-  const [entries, setEntries] = useState(() => readIndex());
-  const [watchDir, setWatchDir] = useState(SCREENSHOT_DIR);
+function isImage(filepath) {
+  return IMAGE_EXTS.has(path.extname(filepath).toLowerCase());
+}
 
-  // Index existing screenshots on mount
-  useEffect(() => {
-    try {
-      const files = fs.readdirSync(watchDir);
-      const existingEntries = readIndex();
-      const existingPaths = new Set(existingEntries.map(e => e.path));
-      const newEntries = [];
-      
-      files.forEach(file => {
-        const filePath = path.join(watchDir, file);
-        const ext = path.extname(file).toLowerCase();
-        
-        if (IMAGE_EXTS.has(ext) && !existingPaths.has(filePath)) {
-          try {
-            const stats = fs.statSync(filePath);
-            if (stats.isFile()) {
-              const entry = makeEntry(filePath);
-              newEntries.push(entry);
-              upsertEntry(entry);
-            }
-          } catch (err) {
-            // Skip files that can't be accessed
-          }
-        }
-      });
-      
-      if (newEntries.length > 0) {
-        // Add new entries to the beginning of the list
-        const updatedEntries = [...newEntries, ...existingEntries];
-        setEntries(updatedEntries);
-      }
-    } catch (err) {
-      // If directory can't be read, continue with existing entries
-    }
-  }, [watchDir]);
+export default function useScreenshots() {
+  const [screenshots, setScreenshots] = useState([]);
 
-  // Watch for new screenshots
+  // Load persisted index on mount
   useEffect(() => {
-    const watcher = chokidar.watch(watchDir, {
-      ignored: /^\./,
-      persistent: true,
-      ignoreInitial: true, // Don't re-index on watch start
-      depth: 2,
+    setScreenshots(readIndex());
+  }, []);
+
+  // Watch filesystem for new/removed screenshots
+  useEffect(() => {
+    const watcher = chokidar.watch(SCREENSHOT_DIR, {
+      ignoreInitial: false,
+      depth: 0,
     });
 
-    watcher.on('add', (filePath) => {
-      const ext = path.extname(filePath).toLowerCase();
-      if (!IMAGE_EXTS.has(ext)) return;
-      const entry = makeEntry(filePath);
-      setEntries(prev => {
-        // Don't duplicate
-        if (prev.find(e => e.path === filePath)) return prev;
-        return upsertEntry(entry) && [entry, ...prev];
+    watcher.on('add', (filepath) => {
+      if (!isImage(filepath)) return;
+      setScreenshots(prev => {
+        // store uses base64(filepath) as id; check by .path to avoid dupes
+        if (prev.some(s => s.path === filepath)) return prev;
+        const entry = makeEntry(filepath);
+        return upsertEntry(entry); // writes to disk, returns updated array
+      });
+    });
+
+    watcher.on('unlink', (filepath) => {
+      if (!isImage(filepath)) return;
+      setScreenshots(prev => {
+        const entry = prev.find(s => s.path === filepath);
+        if (!entry) return prev;
+        return deleteEntry(entry.id); // writes to disk, returns updated array
       });
     });
 
     return () => watcher.close();
-  }, [watchDir]);
-
-  const updateEntry = useCallback((entry) => {
-    upsertEntry(entry);
-    setEntries(readIndex());
   }, []);
 
-  const removeEntry = useCallback((id) => {
-    deleteEntry(id);
-    setEntries(readIndex());
+  const updateScreenshot = useCallback((id, patch) => {
+    setScreenshots(prev => {
+      const existing = prev.find(s => s.id === id);
+      if (!existing) return prev;
+      return upsertEntry({ ...existing, ...patch });
+    });
   }, []);
 
-  return { entries, setEntries, updateEntry, removeEntry, watchDir, setWatchDir };
+  const deleteScreenshot = useCallback((id) => {
+    setScreenshots(() => deleteEntry(id));
+  }, []);
+
+  return { screenshots, updateScreenshot, deleteScreenshot };
 }
